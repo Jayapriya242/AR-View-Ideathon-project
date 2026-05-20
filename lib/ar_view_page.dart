@@ -8,9 +8,11 @@ import 'package:ar_flutter_plugin_plus/managers/ar_session_manager.dart';
 import 'package:ar_flutter_plugin_plus/models/ar_anchor.dart';
 import 'package:ar_flutter_plugin_plus/models/ar_hittest_result.dart';
 import 'package:ar_flutter_plugin_plus/models/ar_node.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
+import 'dart:io';
 
 class ARViewPage extends StatefulWidget {
   final String productName;
@@ -27,13 +29,35 @@ class _ARViewPageState extends State<ARViewPage> {
   ARAnchorManager? _arAnchorManager;
   ARNode? _modelNode;
 
-  final String _threeDFile = 'assets/3dfiles/Right angle.glb';
-  final String _modelAsset = 'assets/3dfiles/Right angle.glb';
+  final String _threeDFile = 'assets/3dfiles/right_angle.glb';
+  static const double _modelScaleValue = 0.02;
 
   String get _statusText => _modelPlaced
       ? 'Model placed in AR environment'
       : 'Searching for flat surface';
   bool _modelPlaced = false;
+
+  bool get _isRemoteModel => _threeDFile.toLowerCase().startsWith('http');
+
+  String get _resolvedModelUri {
+    if (_isRemoteModel) return _threeDFile;
+    return _threeDFile.startsWith('assets/')
+        ? _threeDFile.substring('assets/'.length)
+        : _threeDFile;
+  }
+
+  Future<String?> _prepareLocalModelFile() async {
+    try {
+      final data = await rootBundle.load(_threeDFile);
+      final bytes = data.buffer.asUint8List();
+      final safeName = _threeDFile.split('/').last.replaceAll(' ', '_');
+      final file = File('${Directory.systemTemp.path}/$safeName');
+      await file.writeAsBytes(bytes, flush: true);
+      return file.path;
+    } catch (_) {
+      return null;
+    }
+  }
 
   bool get _supportsArAsset {
     final lower = _threeDFile.toLowerCase();
@@ -231,10 +255,21 @@ class _ARViewPageState extends State<ARViewPage> {
     final newAnchor = ARPlaneAnchor(transformation: hit.worldTransform);
     await _arAnchorManager?.addAnchor(newAnchor);
 
+    NodeType nodeType = _isRemoteModel ? NodeType.webGLB : NodeType.localGLB;
+    String nodeUri = _resolvedModelUri;
+
+    if (!_isRemoteModel) {
+      final localPath = await _prepareLocalModelFile();
+      if (localPath != null) {
+        nodeType = NodeType.fileSystemAppFolderGLB;
+        nodeUri = localPath;
+      }
+    }
+
     final node = ARNode(
-      type: NodeType.webGLB,
-      uri: _modelAsset,
-      scale: vector.Vector3(0.2, 0.2, 0.2),
+      type: nodeType,
+      uri: nodeUri,
+      scale: vector.Vector3.all(_modelScaleValue),
       position: vector.Vector3(0.0, 0.0, 0.0),
     );
 
