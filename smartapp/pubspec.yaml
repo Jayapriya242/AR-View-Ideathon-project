@@ -71,6 +71,7 @@ flutter:
     - assets/images/inline.png
     - assets/images/parallel.png
     - assets/images/right-angle.png
+    - assets/3dfiles/
 
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
