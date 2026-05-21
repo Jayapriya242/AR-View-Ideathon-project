@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
 import 'dart:io';
+import 'dart:math' as math;
 
 class ARViewPage extends StatefulWidget {
   final String productName;
@@ -31,11 +32,20 @@ class _ARViewPageState extends State<ARViewPage> {
 
   final String _threeDFile = 'assets/3dfiles/right_angle.glb';
   static const double _modelScaleValue = 0.02;
+  static const double _nudgeStep = 0.03;
+  static const double _scaleStep = 0.1;
+  static const double _minScale = 0.003;
+  static const double _maxScale = 0.4;
 
   String get _statusText => _modelPlaced
       ? 'Model placed in AR environment'
       : 'Searching for flat surface';
   bool _modelPlaced = false;
+  double _currentScale = _modelScaleValue;
+  final TextEditingController _rotationController =
+      TextEditingController(text: '15');
+  String _selectedRotationAxis = 'Y';
+  bool _controlsExpanded = true;
 
   bool get _isRemoteModel => _threeDFile.toLowerCase().startsWith('http');
 
@@ -68,6 +78,7 @@ class _ARViewPageState extends State<ARViewPage> {
 
   @override
   void dispose() {
+    _rotationController.dispose();
     _arSessionManager?.dispose();
     super.dispose();
   }
@@ -132,7 +143,9 @@ class _ARViewPageState extends State<ARViewPage> {
                         const SizedBox(width: 8),
                         Text(
                           _supportsArAsset
-                              ? 'Tap plane to place model'
+                              ? (_modelPlaced
+                                    ? 'Model placed'
+                                    : 'Tap to place model')
                               : 'STEP file needs conversion',
                           style: GoogleFonts.jetBrainsMono(
                             fontSize: 12,
@@ -150,28 +163,30 @@ class _ARViewPageState extends State<ARViewPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF00648F),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
+                      if (!_modelPlaced) ...[
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00648F),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: _supportsArAsset
+                              ? _placeModel
+                              : _showUnsupportedAssetMessage,
+                          child: Text(
+                            _supportsArAsset
+                                ? 'Place 3D model in AR'
+                                : 'STEP asset not supported',
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
-                        onPressed: _supportsArAsset
-                            ? _placeModel
-                            : _showUnsupportedAssetMessage,
-                        child: Text(
-                          _supportsArAsset
-                              ? 'Place 3D model in AR'
-                              : 'STEP asset not supported',
-                          style: GoogleFonts.inter(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
+                        const SizedBox(height: 16),
+                      ],
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -208,11 +223,17 @@ class _ARViewPageState extends State<ARViewPage> {
                             const SizedBox(height: 10),
                             _buildInfoRow(
                               'Tip',
-                              'Move device slowly and keep plane in view',
+                              _modelPlaced
+                                  ? 'Drag to move • Two-finger rotate'
+                                  : 'Move device slowly and keep plane in view',
                             ),
                           ],
                         ),
                       ),
+                      if (_modelPlaced) ...[
+                        const SizedBox(height: 12),
+                        _buildControlsSheet(),
+                      ],
                     ],
                   ),
                 ),
@@ -240,10 +261,18 @@ class _ARViewPageState extends State<ARViewPage> {
       customPlaneTexturePath: "",
       showWorldOrigin: true,
       handleTaps: true,
+      handlePans: true,
+      handleRotation: true,
     );
 
     _arObjectManager?.onInitialize();
     _arSessionManager?.onPlaneOrPointTap = _onPlaneTapped;
+    _arObjectManager?.onPanEnd = (_, transform) {
+      _modelNode?.transform = transform;
+    };
+    _arObjectManager?.onRotationEnd = (_, transform) {
+      _modelNode?.transform = transform;
+    };
   }
 
   Future<void> _onPlaneTapped(List<ARHitTestResult> hitTestResults) async {
@@ -281,8 +310,68 @@ class _ARViewPageState extends State<ARViewPage> {
       setState(() {
         _modelNode = node;
         _modelPlaced = true;
+        _currentScale = _modelScaleValue;
+        _controlsExpanded = true;
       });
     }
+  }
+
+  void _nudgeModel(double x, double y, double z) {
+    final node = _modelNode;
+    if (node == null) return;
+    final p = node.position;
+    node.position = vector.Vector3(p.x + x, p.y + y, p.z + z);
+    setState(() {});
+  }
+
+  void _scaleModel(double factorDelta) {
+    final node = _modelNode;
+    if (node == null) return;
+    final nextScale = (_currentScale * (1 + factorDelta)).clamp(
+      _minScale,
+      _maxScale,
+    );
+    _currentScale = nextScale;
+    node.scale = vector.Vector3.all(_currentScale);
+    setState(() {});
+  }
+
+  void _rotateModelByDegrees(double degrees) {
+    final node = _modelNode;
+    if (node == null) return;
+    final current = node.eulerAngles;
+    final radians = degrees * (math.pi / 180.0);
+    switch (_selectedRotationAxis) {
+      case 'X':
+        node.eulerAngles = vector.Vector3(
+          current.x + radians,
+          current.y,
+          current.z,
+        );
+        break;
+      case 'Z':
+        node.eulerAngles = vector.Vector3(
+          current.x,
+          current.y,
+          current.z + radians,
+        );
+        break;
+      case 'Y':
+      default:
+        node.eulerAngles = vector.Vector3(
+          current.x,
+          current.y + radians,
+          current.z,
+        );
+        break;
+    }
+    setState(() {});
+  }
+
+  double _rotationStepFromInput() {
+    final parsed = double.tryParse(_rotationController.text.trim());
+    if (parsed == null || parsed == 0) return 15.0;
+    return parsed.abs();
   }
 
   void _showUnsupportedAssetMessage() {
@@ -329,6 +418,165 @@ class _ARViewPageState extends State<ARViewPage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildControlsSheet() {
+    return GestureDetector(
+      onVerticalDragEnd: (details) {
+        if (details.primaryVelocity == null) return;
+        if (details.primaryVelocity! > 100) {
+          setState(() => _controlsExpanded = false);
+        } else if (details.primaryVelocity! < -100) {
+          setState(() => _controlsExpanded = true);
+        }
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.96),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: () => setState(() => _controlsExpanded = !_controlsExpanded),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[400],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    _controlsExpanded ? 'Hide Controls' : 'Show Controls',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF00648F),
+                    ),
+                  ),
+                  Icon(
+                    _controlsExpanded
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_up,
+                    color: const Color(0xFF00648F),
+                  ),
+                ],
+              ),
+            ),
+            if (_controlsExpanded) ...[
+              const SizedBox(height: 10),
+              _buildAdjustControlsContent(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAdjustControlsContent() {
+    return Column(
+      children: [
+        Text(
+          'Align Model',
+          style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _controlButton('Left', Icons.west, () => _nudgeModel(-_nudgeStep, 0, 0)),
+            _controlButton('Right', Icons.east, () => _nudgeModel(_nudgeStep, 0, 0)),
+            _controlButton('Forward', Icons.north, () => _nudgeModel(0, 0, -_nudgeStep)),
+            _controlButton('Back', Icons.south, () => _nudgeModel(0, 0, _nudgeStep)),
+            _controlButton('Up', Icons.arrow_upward, () => _nudgeModel(0, _nudgeStep, 0)),
+            _controlButton('Down', Icons.arrow_downward, () => _nudgeModel(0, -_nudgeStep, 0)),
+            _controlButton('Scale +', Icons.zoom_in, () => _scaleModel(_scaleStep)),
+            _controlButton('Scale -', Icons.zoom_out, () => _scaleModel(-_scaleStep)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment<String>(value: 'X', label: Text('X')),
+                ButtonSegment<String>(value: 'Y', label: Text('Y')),
+                ButtonSegment<String>(value: 'Z', label: Text('Z')),
+              ],
+              selected: <String>{_selectedRotationAxis},
+              onSelectionChanged: (selection) {
+                setState(() {
+                  _selectedRotationAxis = selection.first;
+                });
+              },
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _rotationController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                  signed: false,
+                ),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Rotation angle (deg)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _controlButton(
+              'Rotate -',
+              Icons.rotate_left,
+              () => _rotateModelByDegrees(-_rotationStepFromInput()),
+            ),
+            const SizedBox(width: 8),
+            _controlButton(
+              'Rotate +',
+              Icons.rotate_right,
+              () => _rotateModelByDegrees(_rotationStepFromInput()),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Current scale: ${_currentScale.toStringAsFixed(3)} • Rotate axis: $_selectedRotationAxis',
+          style: GoogleFonts.jetBrainsMono(fontSize: 11, color: Colors.black54),
+        ),
+      ],
+    );
+  }
+
+  Widget _controlButton(String label, IconData icon, VoidCallback onPressed) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 14),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: const Color(0xFF00648F),
+        side: const BorderSide(color: Color(0xFF00648F)),
+        textStyle: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600),
+        visualDensity: VisualDensity.compact,
+      ),
     );
   }
 }
